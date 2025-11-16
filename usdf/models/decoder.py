@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from .se2_encoder import SE2Encoder
 import numpy as np
 from collections import OrderedDict
+from torchvision import models
 
 class MLPBlock(nn.Module):
     def __init__(self, in_features, out_features,
@@ -150,6 +151,29 @@ class SineLayer(nn.Module):
             return self.linear(x)
         return torch.sin(self.omega_0 * self.linear(x))
 
+class ResNet_Encoder(torch.nn.Module):
+    def __init__(self, latent_size=128):
+        super(ResNet_Encoder, self).__init__()
+        resnet = models.resnet50(pretrained=True)
+        self.share = torch.nn.Sequential()
+        self.share.add_module("conv1", resnet.conv1)
+        self.share.add_module("bn1", resnet.bn1)
+        self.share.add_module("relu", resnet.relu)
+        self.share.add_module("maxpool", resnet.maxpool)
+        self.share.add_module("layer1", resnet.layer1)
+        self.share.add_module("layer2", resnet.layer2)
+        self.share.add_module("layer3", resnet.layer3)
+        self.share.add_module("layer4", resnet.layer4)
+        self.share.add_module("avgpool", resnet.avgpool)
+        self.fc = nn.Linear(2048, latent_size)
+                                
+
+    def forward(self, x):
+        x = x.view(-1, 3, 224, 224)
+        x = self.share.forward(x)
+        x = self.fc(x.view(-1, 2048))
+        return x
+
 class Decoder(nn.Module):
     def __init__(self,
                  latent_size,
@@ -162,9 +186,7 @@ class Decoder(nn.Module):
                  dropout_prob=0.0,
                  residual=False,
                  weight_norm=False,
-                 mode ='mlp',
-                 first_omega_0=30,
-                 hidden_omega_0=30
+                 target_latent_size=128,
                  ):
         super(Decoder, self).__init__()
 
@@ -179,17 +201,10 @@ class Decoder(nn.Module):
         self.num_layers = len(dims)
         self.latent_in = latent_in
         self.weight_norm = weight_norm
-        self.encoder = SE2Encoder(mode=mode, latent_size=latent_size, hidden_dim=128, num_layers=3)
-        if mode == 'mlp':
-            print("Using MLP Decoder")
-        else:
-            print("Using Sine Decoder")
-        self.mode = mode
-        self.first_omega_0 = first_omega_0
-        self.hidden_omega_0 = hidden_omega_0
+        self.encoder = ResNet_Encoder(latent_size=latent_size)
 
         layers = []
-        dims = [latent_size + 3] + dims  + [1]
+        dims = [latent_size + 3] + dims  + [target_latent_size]
         for layer_idx in range(len(dims)-1):
             if layer_idx+1 in self.latent_in:
                 out_dim = dims[layer_idx + 1] - dims[0]
@@ -208,26 +223,13 @@ class Decoder(nn.Module):
                     dropout_prob=dropout_prob,
                     last_layer=(layer_idx == len(dims)-2),
                     weight_norm=weight_norm,
-                ) if mode == 'mlp' else
-                SineLayer(
-                    in_features=in_dim,
-                    out_features=out_dim,
-                    omega_0=self.first_omega_0 if layer_idx == 0 else self.hidden_omega_0,
-                    is_first=(layer_idx == 0),
-                    is_last=(layer_idx == len(dims)-2),
-                    residual=residual,
-                    norm_style=norm_style,
-                    norm_mode=norm_mode,
-                    dropout=dropout,
-                    dropout_prob=dropout_prob,
-                    weight_norm=weight_norm,
                 )
             )
         self.network = nn.ModuleList(layers)
 
-    def forward(self, se2_vec, x):
-        points = x.clone().detach().requires_grad_(True)
-        latent_vec = self.encoder(se2_vec)
+    def forward(self, images, points):
+        B, C, H, W = images.shape
+        latent_vec = self.encoder(images)
         x = torch.cat([latent_vec, points], dim=1)
         inputs = x
         for layer_idx, layer in enumerate(self.network):
@@ -236,10 +238,10 @@ class Decoder(nn.Module):
                 x = torch.cat([x, inputs], dim=-1)
             else:
                 x = layer(x)
-        return x, latent_vec, points
+        return x, latent_vec
 
-    def get_latent(self, se2_vec):
-        return self.encoder(se2_vec)
+    def get_latent(self, images):
+        return self.encoder(images)
 
     def inference(self, x):
         inputs = x

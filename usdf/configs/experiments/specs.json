@@ -20,7 +20,8 @@
         "residual": false,
         "dropout": false,
         "dropout_prob": 0.2,
-        "weight_norm": true
+        "weight_norm": true,
+        "target_latent_size": 128
     },
     "CodeLength": 128,
     "NumEpochs": 10001,

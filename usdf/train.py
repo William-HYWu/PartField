@@ -16,15 +16,9 @@ import copy
 import wandb
 
 from models.decoder import Decoder
-from dataset.data import SDFSamples
+from dataset.data import Img_feature_dataset
 
 specifications_filename = "specs.json"
-
-def gradient(y, x, grad_outputs=None):
-    if grad_outputs is None:
-        grad_outputs = torch.ones_like(y)
-    grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
-    return grad
 
 def set_random_seeds(seed=42):
     """Set random seeds for reproducibility."""
@@ -215,29 +209,25 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
 
     num_samp_per_scene = specs["SamplesPerScene"]
     scene_per_batch = specs["ScenesPerBatch"]
-    clamp_dist = specs["ClampingDistance"]
-    minT = -clamp_dist
-    maxT = clamp_dist
-    enforce_minmax = True
-
-    do_code_regularization = get_spec_with_default(specs, "CodeRegularization", True)
-    code_reg_lambda = get_spec_with_default(specs, "CodeRegularizationLambda", 1e-4)
-
-    code_bound = get_spec_with_default(specs, "CodeBound", None)
 
     decoder = Decoder(latent_size, **specs["NetworkSpecs"]).to(device)
 
     num_epochs = specs["NumEpochs"]
 
-    sdf_dataset = SDFSamples(
-            split = "train", subsample=num_samp_per_scene, load_ram=False, random_se2_num=random_se2_num, config_path="configs/dataset/mugs_dataset_config_oriented_single.yaml"
+    feature_dataset = Img_feature_dataset(
+            split = "train", 
+            subsample=num_samp_per_scene, 
+            load_ram=False, 
+            random_se2_num=random_se2_num, 
+            img_path="data/mugs_dataset/images/", 
+            point_path="data/mugs_dataset/points/",
     )
 
     num_data_loader_threads = get_spec_with_default(specs, "DataLoaderThreads", 1)
     print("loading data with {} threads".format(num_data_loader_threads))
 
-    sdf_loader = data_utils.DataLoader(
-        sdf_dataset,
+    feature_loader = data_utils.DataLoader(
+        feature_dataset,
         batch_size=scene_per_batch,
         shuffle=True,
         num_workers=num_data_loader_threads,
@@ -246,18 +236,9 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
 
     print("torch num_threads: {}".format(torch.get_num_threads()))
 
-    num_scenes = len(sdf_dataset)
+    num_scenes = len(feature_dataset)
 
     print("There are {} scenes".format(num_scenes))
-
-    #lat_vecs = torch.nn.Embedding(num_scenes, latent_size, max_norm=code_bound)
-    #torch.nn.init.normal_(
-    #    lat_vecs.weight.data,
-    #    0.0,
-    #    get_spec_with_default(specs, "CodeInitStdDev", 1.0) / math.sqrt(latent_size),
-    #)
-
-    loss_l1 = torch.nn.L1Loss(reduction="sum")
 
     optimizer_all = torch.optim.Adam(
         [
@@ -270,11 +251,11 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
 
     # Best model tracking
     best_loss = float('inf')
-    best_epoch = 0
     models_dir = os.path.join("checkpoints", name)
     os.makedirs(models_dir, exist_ok=True)
 
     start_epoch = 1
+    criterion = torch.nn.MSELoss()
 
     for epoch in tqdm(range(start_epoch, num_epochs + 1), desc="Overall Training Progress", unit="epoch"):
 
@@ -291,122 +272,44 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
         }, step=epoch)
         
         epoch_loss = 0.0
-        epoch_sdf_loss = 0.0
-        epoch_reg_loss = 0.0
-        epoch_gradient_penalty = 0.0
+        epoch_chunk_count = 0
         num_batches = 0
-        se2_vecs_all = sdf_dataset.se2_vector
 
-        for sdf_data, indices in tqdm(sdf_loader, desc="Loading SDF Data", unit="batch"):
+        for imgs, points, features, indices in tqdm(feature_loader, desc="Loading Feature Data", unit="batch"):
+            num_points = points.shape[1]
+            channels, height, width = imgs.shape[1], imgs.shape[2], imgs.shape[3]
+            imgs = imgs.unsqueeze(1).repeat(1, num_points, 1, 1, 1).view(-1, channels, height, width)
+            points = points.view(-1, points.shape[2])
+            features = features.view(-1, features.shape[2])
 
-            # Process the input data
-            sdf_data = sdf_data.reshape(-1, 8)
+            perm = torch.randperm(imgs.shape[0])
+            imgs = imgs[perm]
+            points = points[perm]
+            features = features[perm]
 
-            num_sdf_samples = sdf_data.shape[0]
-            sdf_data.requires_grad = False
-            
-            perm = torch.randperm(num_sdf_samples)
-            sdf_data = sdf_data[perm]
-
-            xyz = sdf_data[:, 0:3]
-            sdf_gt = sdf_data[:, 3].unsqueeze(1)
-            se2_vec = sdf_data[:, 4:8]
-
-            if enforce_minmax:
-                sdf_gt = torch.clamp(sdf_gt, minT, maxT)
-
-            xyz = torch.chunk(xyz, batch_split)
-            indices = torch.chunk(
-                indices.unsqueeze(-1).repeat(1, num_samp_per_scene).view(-1)[perm],
-                batch_split,
-            )
-
-            sdf_gt = torch.chunk(sdf_gt, batch_split)
-            se2_vec = torch.chunk(se2_vec, batch_split)
-
-            batch_loss = 0.0
-            batch_sdf_loss = 0.0
-            batch_reg_loss = 0.0
+            imgs_chunks = torch.chunk(imgs, batch_split)
+            points_chunks = torch.chunk(points, batch_split)
+            features_chunks = torch.chunk(features, batch_split)
 
             optimizer_all.zero_grad()
+            batch_loss = 0.0
 
-            for i in range(batch_split):
-                optimizer_all.zero_grad()
-                #batch_vecs = lat_vecs(indices[i])
-                num_sdf_batch = sdf_gt[i].shape[0]
+            for img_chunk, point_chunk, feature_chunk in zip(imgs_chunks, points_chunks, features_chunks):
+                pred_features = decoder(img_chunk.to(device), point_chunk.to(device))
+                loss = criterion(pred_features, feature_chunk.to(device))
+                loss.backward()
 
-                #input = torch.cat([batch_vecs, xyz[i]], dim=1).to(device)
+                batch_loss += loss.item()
+                epoch_loss += loss.item()
+                epoch_chunk_count += 1
 
-                # NN optimization
-                pred_sdf, latent_vec, points = decoder(se2_vec[i].to(device), xyz[i].to(device))
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=grad_clip)
 
-                gradient_sdf = gradient(pred_sdf, points)
-                grad_loss = ((gradient_sdf.norm(2, dim=-1) - 1) ** 2).mean()
-
-                if enforce_minmax:
-                    pred_sdf = torch.clamp(pred_sdf, minT, maxT)
-
-                sdf_loss = loss_l1(pred_sdf, sdf_gt[i].to(device)) / num_sdf_batch
-                chunk_loss = sdf_loss
-
-                # KL divergence regularization: encourage latent_vec to match N(0, I)
-                # if do_code_regularization:
-                #     # latent_vec: shape (num_sdf_batch, latent_size) or similar
-                #     # Compute empirical mean and variance across the batch (per-dimension)
-                #     mu = torch.mean(latent_vec, dim=0)
-                #     var = torch.var(latent_vec, dim=0, unbiased=False)
-                #     # numerical stability
-                #     var_eps = var + 1e-8
-                #     kl = 0.5 * torch.sum(var_eps + mu.pow(2) - 1.0 - torch.log(var_eps))
-                #     reg_loss = (0.01 * min(1, epoch / 100) * kl) / num_sdf_batch
-
-                #     chunk_loss = chunk_loss + reg_loss.to(device)
-                #     batch_reg_loss += reg_loss.item()
-                #     epoch_reg_loss += reg_loss.item()
-
-                if do_code_regularization:
-                    #batch_vecs shape (num_sdf_batch, latent_size)
-                    l2_size_loss = torch.sum(torch.norm(latent_vec, dim=1).pow(2))
-                    reg_loss = (
-                        code_reg_lambda * min(1, epoch / 100) * l2_size_loss
-                    ) / num_sdf_batch
-
-                    chunk_loss = chunk_loss + reg_loss.to(device)
-                    batch_reg_loss += reg_loss.item()
-                    epoch_reg_loss += reg_loss.item()
-                #if is sine net, add gradient penalty
-                chunk_loss = chunk_loss + 0.1*grad_loss
-
-                chunk_loss.backward()
-
-                batch_loss += chunk_loss.item()
-                batch_sdf_loss += sdf_loss.item()
-                epoch_loss += chunk_loss.item()
-                epoch_sdf_loss += sdf_loss.item()
-                epoch_gradient_penalty += grad_loss.item()
-                if grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
-                optimizer_all.step()  
-
-            #optimizer_all.step()
+            optimizer_all.step()
             num_batches += 1
 
-        avg_epoch_loss = epoch_loss / (num_batches*batch_split)
-        avg_sdf_loss = epoch_sdf_loss / (num_batches*batch_split)
-        avg_reg_loss = epoch_reg_loss / (num_batches*batch_split) if do_code_regularization else 0.0
-        avg_gradient_penalty = epoch_gradient_penalty / (num_batches*batch_split)
-        
-        with torch.no_grad():
-            decoder.eval()
-            se2_vecs_all = torch.tensor(se2_vecs_all, dtype=torch.float32)
-            latent_vecs = decoder.get_latent(se2_vecs_all.to(device)).detach().cpu()
-
-        latent_weights = latent_vecs
-        if len(latent_vecs.shape) == 1:
-            latent_weights = latent_vecs.unsqueeze(1)
-        latent_magnitude = torch.mean(torch.norm(latent_weights, dim=1))
-        latent_mean = torch.mean(latent_weights)
-        latent_std = torch.std(latent_weights)
+        avg_epoch_loss = epoch_loss / max(1, epoch_chunk_count)
         
         end = time.time()
         epoch_time = end - start
@@ -414,103 +317,33 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
         log_dict = {
             "epoch": epoch,
             "loss/total": avg_epoch_loss,
-            "loss/sdf": avg_sdf_loss,
-            "loss/regularization": avg_reg_loss,
-            "loss/gradient_penalty": avg_gradient_penalty,
-            "metrics/latent_magnitude": latent_magnitude.item(),
-            "metrics/latent_mean": latent_mean.item(),
-            "metrics/latent_std": latent_std.item(),
             "metrics/epoch_time": epoch_time,
             "metrics/samples_per_sec": (num_batches * scene_per_batch * num_samp_per_scene) / epoch_time,
         }
         
-        decoder_grad_norm = 0.0
-        latent_grad_norm = 0.0
-        for param in decoder.parameters():
-            if param.grad is not None:
-                decoder_grad_norm += param.grad.data.norm(2).item() ** 2
-        #for param in latent_vecs.parameters():
-        #    if param.grad is not None:
-        #        latent_grad_norm += param.grad.data.norm(2).item() ** 2
-        # latent grad norm: only if latent_vecs is a tensor that requires grad and has grad
-        latent_grad_norm_sq = 0.0
-        if isinstance(latent_vecs, torch.Tensor):
-            if getattr(latent_vecs, "requires_grad", False) and (latent_vecs.grad is not None):
-                latent_grad_norm_sq = latent_vecs.grad.detach().norm(2).item() ** 2
-        # if latent_vecs is a module (older code), fall back to summing its params:
-        elif hasattr(latent_vecs, "parameters"):
-            for p in latent_vecs.parameters():
-                if p.grad is not None:
-                    latent_grad_norm_sq += p.grad.data.norm(2).item() ** 2
-        
-        log_dict.update({
-            "gradients/decoder_norm": decoder_grad_norm ** 0.5,
-            "gradients/latent_norm": latent_grad_norm ** 0.5,
-        })
-        
         wandb.log(log_dict, step=epoch)
         
-        print("Epoch {} - Loss: {:.6f} (SDF: {:.6f}, Reg: {:.6f}) - Time: {:.2f}s".format(
-            epoch, avg_epoch_loss, avg_sdf_loss, avg_reg_loss, epoch_time))
+        print("Epoch {} - Loss: {:.6f} - Time: {:.2f}s".format(
+            epoch, avg_epoch_loss, epoch_time))
 
         if epoch in checkpoints:
             wandb.log({"checkpoint": epoch}, step=epoch)
             
-            # Save checkpoint latent vectors
-            checkpoint_latent_path = os.path.join(models_dir, f"latent_vectors_epoch_{epoch}.pth")
-            torch.save(latent_vecs, checkpoint_latent_path)
-            print(f"Saved checkpoint latent vectors at epoch {epoch}")
-
-        # Save latent vectors at regular intervals (every 500 epochs)
-        if epoch % 500 == 0:
-            regular_latent_path = os.path.join(models_dir, f"latent_vectors_epoch_{epoch}_loss_{avg_epoch_loss:.6f}.pth")
-            torch.save(latent_vecs, regular_latent_path)
-            print(f"Saved regular checkpoint latent vectors at epoch {epoch}")
-
         if epoch % 100 == 0:
             if avg_epoch_loss < best_loss:
                 best_loss = avg_epoch_loss
-                best_epoch = epoch
                 
                 # Save best model
                 best_model_path = os.path.join(models_dir, f"best_model_epoch_{epoch}_loss_{avg_epoch_loss:.6f}_{wandb_name}.pth")
                 best_model = copy.deepcopy(decoder.state_dict())
                 torch.save(best_model, best_model_path)
-                
-                # Save corresponding latent vectors
-                latent_vectors_path = os.path.join(models_dir, f"best_latent_vectors_epoch_{epoch}_loss_{avg_epoch_loss:.6f}_{wandb_name}.pth")
-                best_latent_vectors = copy.deepcopy(latent_vecs)
-                torch.save(best_latent_vectors, latent_vectors_path)
-                
                 print(f"Saved best model at epoch {epoch} with loss {avg_epoch_loss:.6f}")
-                print(f"Saved corresponding latent vectors: {latent_vectors_path}")
-                
-                # Log to wandb
                 wandb.log({
                     "best_model_saved": epoch,
                     "best_loss": best_loss,
-                    "latent_vectors_saved": epoch,
                 }, step=epoch)
-                
-                # Remove previous best model to save space (optional)
-                if best_epoch != epoch:
-                    prev_best_path = os.path.join(models_dir, f"best_model_epoch_{best_epoch}.pth")
-                    if os.path.exists(prev_best_path):
-                        os.remove(prev_best_path)
-                        print(f" Removed previous best model from epoch {best_epoch}")
 
-    # Save final latent vectors
-    final_latent_path = os.path.join(models_dir, f"final_latent_vectors_epoch_{epoch}_loss_{avg_epoch_loss:.6f}.pth")
-    torch.save(latent_vecs, final_latent_path)
-    print(f"Saved final latent vectors: {final_latent_path}")
-    
-    # Also save a mapping from scene indices to scene names for easier reconstruction
-    scene_mapping_path = os.path.join(models_dir, "scene_index_mapping.json")
-    if hasattr(sdf_dataset, 'npz_filenames'):
-        scene_mapping = {i: os.path.basename(filename) for i, filename in enumerate(sdf_dataset.npz_filenames)}
-        with open(scene_mapping_path, 'w') as f:
-            json.dump(scene_mapping, f, indent=2)
-        print(f"Saved scene index mapping: {scene_mapping_path}")
+    print("Training complete.")
 
     wandb.finish()
 
