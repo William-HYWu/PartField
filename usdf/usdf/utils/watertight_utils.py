@@ -2,7 +2,7 @@ import argparse
 import os
 import subprocess
 
-MANIFOLD_EXECUTABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../3rd/Manifold/build/manifold")
+MANIFOLD_EXECUTABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../3rd/Manifold/build/manifold")
 
 
 def make_mesh_watertight(input_mesh, output_mesh):
