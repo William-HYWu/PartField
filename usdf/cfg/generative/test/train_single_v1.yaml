@@ -1,0 +1,10 @@
+data:
+  test:
+    dataset: RenderDataset
+    meshes_dir: out/meshes/shapenet/mugs_proc/
+    dataset_dir: out/datasets/generative/test/train_mugs_single_v1/
+    N_angles: 1
+    N_surface_pointcloud: 2048
+    N_free_pointcloud: 2048
+    splits:
+      test: train_small.txt

@@ -1,0 +1,36 @@
+method: deepsdf
+data:
+  train:
+    dataset: SDFTFDataset
+    meshes_dir: out/meshes/shapenet/mugs_proc/
+    dataset_dir: out/datasets/generative/mugs_v3/
+    N_random: 25000
+    N_off_surface: 250000
+    N_sdf: 120000
+    has_point_clouds: False
+    balance_semantics: False
+    off_surface_sigma_a: 0.05
+    off_surface_sigma_b: 0.015811388300841896
+    N_transforms: 40
+    translation_bound: [ 0.1, 0.1, 0.1 ]
+    scale_bounds: [ 0.6, 1.4 ]
+    splits:
+      train: train.txt
+training:
+  out_dir: out/models/generative/deepsdf_latent_v2/
+  batch_size: 4
+  learning_rate:
+    decoder: 1e-5
+    latent: 1e-3
+  sdf_clip: 0.1
+  epochs: 100000
+  epochs_per_save: 5
+  epochs_per_validation: 100
+  loss_weights:
+    sdf_loss: 1.0
+    embedding_loss: 1e-2
+    reg_loss: 1e-6
+model:
+  z_object_size: 256
+  use_angle: false
+  sinusoidal_embed: false

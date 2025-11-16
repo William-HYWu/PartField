@@ -1,0 +1,11 @@
+data:
+  test:
+    dataset: RenderDataset
+    meshes_dir: out/meshes/shapenet/mugs_proc/
+    dataset_dir: out/datasets/generative/test/test_mugs_v1/
+    N_angles: 16
+    N_surface_pointcloud: 2048
+    N_free_pointcloud: 4096
+    splits:
+      train: train.txt
+      test: test.txt
