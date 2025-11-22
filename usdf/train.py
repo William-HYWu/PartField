@@ -269,28 +269,45 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
         num_batches = 0
 
         for imgs, points, features, indices in tqdm(feature_loader, desc="Loading Feature Data", unit="batch"):
+            imgs = imgs.to(device)
+            points = points.to(device)
+            features = features.to(device)
+
+            # 1. Encode images to latents
+            latents = decoder.get_latent(imgs) # (B, latent_size)
+
+            # 2. Expand latents to match points
             num_points = points.shape[1]
-            channels, height, width = imgs.shape[1], imgs.shape[2], imgs.shape[3]
-            imgs = imgs.unsqueeze(1).repeat(1, num_points, 1, 1, 1).view(-1, channels, height, width)
-            points = points.view(-1, points.shape[2])
-            features = features.view(-1, features.shape[2])
+            # (B, 1, latent_size) -> (B, N, latent_size)
+            latents_expanded = latents.unsqueeze(1).expand(-1, num_points, -1)
 
-            perm = torch.randperm(imgs.shape[0])
-            imgs = imgs[perm]
-            points = points[perm]
-            features = features[perm]
+            # 3. Flatten to (B*N, ...)
+            latents_flat = latents_expanded.reshape(-1, latents.shape[-1])
+            points_flat = points.reshape(-1, 3)
+            features_flat = features.reshape(-1, features.shape[-1])
 
-            imgs_chunks = torch.chunk(imgs, batch_split)
-            points_chunks = torch.chunk(points, batch_split)
-            features_chunks = torch.chunk(features, batch_split)
+            # 4. Shuffle
+            perm = torch.randperm(points_flat.shape[0])
+            latents_flat = latents_flat[perm]
+            points_flat = points_flat[perm]
+            features_flat = features_flat[perm]
+
+            # 5. Chunking
+            latents_chunks = torch.chunk(latents_flat, batch_split)
+            points_chunks = torch.chunk(points_flat, batch_split)
+            features_chunks = torch.chunk(features_flat, batch_split)
 
             optimizer_all.zero_grad()
             batch_loss = 0.0
 
-            for img_chunk, point_chunk, feature_chunk in zip(imgs_chunks, points_chunks, features_chunks):
-                pred_features = decoder(img_chunk.to(device), point_chunk.to(device))
-                loss = criterion(pred_features, feature_chunk.to(device))
-                loss.backward()
+            for i, (latent_chunk, point_chunk, feature_chunk) in enumerate(zip(latents_chunks, points_chunks, features_chunks)):
+                model_input = torch.cat([latent_chunk, point_chunk], dim=1)
+                pred_features = decoder.inference(model_input)
+                loss = criterion(pred_features, feature_chunk)
+                
+                # Retain graph for all but the last chunk to allow multiple backward passes through encoder
+                retain = (i < len(latents_chunks) - 1)
+                loss.backward(retain_graph=retain)
 
                 batch_loss += loss.item()
                 epoch_loss += loss.item()
