@@ -16,7 +16,7 @@ import copy
 import wandb
 
 from models.decoder import Decoder
-from dataset.data import Img_feature_dataset
+from dataset.data import PartFieldDataset
 
 specifications_filename = "specs.json"
 
@@ -214,14 +214,7 @@ def main_function(experiment_directory, continue_from, batch_split, seed=42, wan
 
     num_epochs = specs["NumEpochs"]
 
-    feature_dataset = Img_feature_dataset(
-            split = "train", 
-            subsample=num_samp_per_scene, 
-            load_ram=False, 
-            random_se2_num=random_se2_num, 
-            img_path="data/mugs_dataset/images/", 
-            point_path="data/mugs_dataset/points/",
-    )
+    feature_dataset = PartFieldDataset(data_root="data")
 
     num_data_loader_threads = get_spec_with_default(specs, "DataLoaderThreads", 1)
     print("loading data with {} threads".format(num_data_loader_threads))
@@ -397,7 +390,7 @@ if __name__ == "__main__":
         "--wandb_project",
         dest="wandb_project",
         type=str,
-        default="usdf-deepsdf",
+        default="442",
         help="Wandb project name (default: usdf-deepsdf).",
     )
     arg_parser.add_argument(

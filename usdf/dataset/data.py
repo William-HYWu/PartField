@@ -72,10 +72,13 @@ def unpack_sdf_samples(filename, subsample=None):
 
 def load_image(image_path):
     image = torchvision.io.read_image(image_path)
+    if image.shape[0] == 4:
+        image = image[:3]
     image = image.float() / 255.0  # Normalize to [0, 1]
     transform = torchvision.transforms.Compose(
         [
-            torchvision.transforms.Resize((128, 128)),
+            torchvision.transforms.Resize((224, 224)),
+            torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
     image = transform(image)
@@ -207,50 +210,33 @@ def unpack_sdf_samples_from_ram(data, subsample=None):
     return samples
 
 
-class Img_feature_dataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        split,
-        subsample,
-        load_ram=False,
-        random_se2_num=0,
-        img_path="data/mugs_dataset/images/",
-        point_path="data/mugs_dataset/points/",
-    ):
-        self.subsample = subsample
-        self.use_random_se2 = False
-        
-        # Work on this later
-        if isinstance(split, str):
-            self.imgfiles = get_instance_filenames(split, img_path)
-            self.pointfiles = get_instance_filenames(split, point_path)
-            assert len(self.imgfiles) == len(self.pointfiles), "Image and point file lists must be the same length"
-        
-        self.load_ram = load_ram
+class PartFieldDataset(torch.utils.data.Dataset):
+    def __init__(self, data_root="data"):
+        self.renders_dir = os.path.join(data_root, "renders")
+        self.points_dir = os.path.join(data_root, "partfield_batch_0")
+        self.data_pairs = []
 
-        if load_ram:
-            self.loaded_data = []
-            for filename in self.npyfiles:
-                npz = np.load(filename)
-                pos_tensor = remove_nans(torch.from_numpy(npz["pos"]).float())
-                neg_tensor = remove_nans(torch.from_numpy(npz["neg"]).float())
-                self.loaded_data.append(
-                    [
-                        pos_tensor[torch.randperm(pos_tensor.shape[0])],
-                        neg_tensor[torch.randperm(neg_tensor.shape[0])],
-                    ]
-                )
-        if random_se2_num > 0:
-            self.use_random_se2 = True
-            self.random_se2_num = random_se2_num
-        _, self.se2_vector = generate_random_se2(random_se2_num)
+        if os.path.exists(self.renders_dir):
+            for obj_id in os.listdir(self.renders_dir):
+                # Check if it is a directory
+                if not os.path.isdir(os.path.join(self.renders_dir, obj_id)):
+                    continue
+                
+                img_path = os.path.join(self.renders_dir, obj_id, f"{obj_id}_view00.png")
+                point_path = os.path.join(self.points_dir, f"part_feat_coord_{obj_id}_0_batch.npy")
+
+                if os.path.exists(img_path) and os.path.exists(point_path):
+                    self.data_pairs.append((img_path, point_path))
 
     def __len__(self):
-        return len(self.imgfiles)
+        return len(self.data_pairs)
 
     def __getitem__(self, idx):
-        img = load_image(self.imgfiles[idx])
-        pts_features = load_points(self.pointfiles[idx])
-        xyz = pts_features[:, -3:]
-        features = pts_features[:, :-3]
+        img_path, point_path = self.data_pairs[idx]
+        img = load_image(img_path)
+        pts_features = load_points(point_path)
+        
+        xyz = pts_features[:, :3]
+        features = pts_features[:, 3:]
+        
         return img, xyz, features
