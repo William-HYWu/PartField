@@ -239,4 +239,4 @@ class PartFieldDataset(torch.utils.data.Dataset):
         xyz = pts_features[:, :3]
         features = pts_features[:, 3:]
         
-        return img, xyz, features
+        return img, xyz, features, idx
