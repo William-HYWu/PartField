@@ -186,7 +186,7 @@ class Decoder(nn.Module):
                  dropout_prob=0.0,
                  residual=False,
                  weight_norm=False,
-                 target_latent_size=128,
+                 target_latent_size=448,
                  ):
         super(Decoder, self).__init__()
 
