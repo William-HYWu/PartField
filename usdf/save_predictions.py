@@ -88,9 +88,13 @@ def main(experiment_directory, checkpoint, data_root="data", gpu_id=0):
             
             pred_feats = np.concatenate(pred_feats_list, axis=0)
             
+            # Concatenate points and predicted features
+            points_np = points.squeeze(0).cpu().numpy()
+            output_data = np.concatenate([points_np, pred_feats], axis=1)
+
             # 5. Save
             save_path = os.path.join(output_dir, f"{obj_id[0]}.npy")
-            np.save(save_path, pred_feats)
+            np.save(save_path, output_data)
 
     print("Done.")
 
