@@ -85,7 +85,11 @@ def load_image(image_path):
     return image
 
 def load_points(point_path):
-    npz = np.load(point_path)
+    try:
+        npz = np.load(point_path)
+    except ValueError as e:
+        print(f"Error loading {point_path}: {e}")
+        raise e
     points = torch.from_numpy(npz).float()
     return points
 
@@ -223,7 +227,7 @@ class PartFieldDataset(torch.utils.data.Dataset):
                     continue
                 
                 img_path = os.path.join(self.renders_dir, obj_id,"images", f"0.png")
-                point_path = os.path.join(self.points_dir, f"part_feat_{obj_id}_pc_0.npy")
+                point_path = os.path.join(self.points_dir, f"part_feat_coord_{obj_id}_pc_0.npy")
 
                 if os.path.exists(img_path) and os.path.exists(point_path):
                     self.data_pairs.append((img_path, point_path))
@@ -238,6 +242,7 @@ class PartFieldDataset(torch.utils.data.Dataset):
         img_path, point_path = self.data_pairs[idx]
         img = load_image(img_path)
         pts_features = load_points(point_path)
+        print("Loaded points shape:", pts_features.shape)
         
         xyz = pts_features[:, :3]
         features = pts_features[:, 3:]
