@@ -222,8 +222,8 @@ class PartFieldDataset(torch.utils.data.Dataset):
                 if not os.path.isdir(os.path.join(self.renders_dir, obj_id)):
                     continue
                 
-                img_path = os.path.join(self.renders_dir, obj_id, f"{obj_id}_view00.png")
-                point_path = os.path.join(self.points_dir, f"part_feat_coord_{obj_id}_0_batch.npy")
+                img_path = os.path.join(self.renders_dir, obj_id,"images", f"0.png")
+                point_path = os.path.join(self.points_dir, f"part_feat_{obj_id}_pc_0.npy")
 
                 if os.path.exists(img_path) and os.path.exists(point_path):
                     self.data_pairs.append((img_path, point_path))
