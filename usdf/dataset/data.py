@@ -227,6 +227,9 @@ class PartFieldDataset(torch.utils.data.Dataset):
 
                 if os.path.exists(img_path) and os.path.exists(point_path):
                     self.data_pairs.append((img_path, point_path))
+        print("Total samples in dataset:", len(self.data_pairs))
+        print("Taking 80% for training, 20% for validation.")
+        self.data_pairs = self.data_pairs[:int(0.8 * len(self.data_pairs))]
 
     def __len__(self):
         return len(self.data_pairs)
