@@ -219,10 +219,11 @@ class PartFieldDataset(torch.utils.data.Dataset):
         self.renders_dir = os.path.join(data_root, "renders")
         self.points_dir = os.path.join(data_root, "partfield_batch_0")
         self.data_pairs = []
-
+        self.obj_id = []
         if os.path.exists(self.renders_dir):
             for obj_id in os.listdir(self.renders_dir):
                 # Check if it is a directory
+                print("obj_id",obj_id)
                 if not os.path.isdir(os.path.join(self.renders_dir, obj_id)):
                     continue
                 
@@ -231,6 +232,7 @@ class PartFieldDataset(torch.utils.data.Dataset):
 
                 if os.path.exists(img_path) and os.path.exists(point_path):
                     self.data_pairs.append((img_path, point_path))
+                    self.obj_id.append(obj_id)
         print("Total samples in dataset:", len(self.data_pairs))
         print("Taking 80% for training, 20% for validation.")
         self.data_pairs = self.data_pairs[:int(0.8 * len(self.data_pairs))]
@@ -242,11 +244,10 @@ class PartFieldDataset(torch.utils.data.Dataset):
         img_path, point_path = self.data_pairs[idx]
         img = load_image(img_path)
         pts_features = load_points(point_path)
-        print("Loaded points shape:", pts_features.shape)
         
         xyz = pts_features[:, :3]
         features = pts_features[:, 3:]
         
-        obj_id = os.path.basename(os.path.dirname(img_path))
+        obj_id = self.obj_id[idx]#os.path.basename(os.path.dirname(img_path))
         
         return img, xyz, features, obj_id
