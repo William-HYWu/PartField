@@ -94,6 +94,7 @@ def main(experiment_directory, checkpoint, data_root="data", gpu_id=0):
 
             # 5. Save
             save_path = os.path.join(output_dir, f"{obj_id[0]}.npy")
+            print(f"Saving prediction for {obj_id[0]} to {save_path}")
             np.save(save_path, output_data)
 
     print("Done.")
